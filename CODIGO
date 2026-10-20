@@ -1,0 +1,198 @@
+import sqlite3
+
+
+def conectar():
+    conexion = sqlite3.connect("tienda.db")
+    conexion.execute("PRAGMA foreign_keys = ON")
+    return conexion
+
+
+def crear_tablas(conexion):
+    conexion.executescript("""
+        CREATE TABLE IF NOT EXISTS productos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL UNIQUE,
+            precio REAL NOT NULL CHECK (precio >= 0),
+            cantidad INTEGER NOT NULL CHECK (cantidad >= 0)
+        );
+        CREATE TABLE IF NOT EXISTS ventas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            producto_id INTEGER NOT NULL,
+            cantidad INTEGER NOT NULL CHECK (cantidad > 0),
+            total REAL NOT NULL,
+            fecha TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            FOREIGN KEY (producto_id) REFERENCES productos(id)
+        );
+    """)
+
+
+def registrar_producto(conexion):
+    nombre = input("Nombre: ").strip()
+    precio = float(input("Precio: "))
+    cantidad = int(input("Cantidad disponible: "))
+    if nombre == "" or precio < 0 or cantidad < 0:
+        print("Datos no validos.")
+        return
+    try:
+        conexion.execute(
+            "INSERT INTO productos (nombre, precio, cantidad) VALUES (?, ?, ?)",
+            (nombre, precio, cantidad),
+        )
+        conexion.commit()
+        print("Producto registrado.")
+    except sqlite3.IntegrityError:
+        print("Ya existe un producto con ese nombre.")
+
+
+def consultar_productos(conexion):
+    filas = conexion.execute(
+        "SELECT id, nombre, precio, cantidad FROM productos ORDER BY id"
+    ).fetchall()
+    if not filas:
+        print("No hay productos.")
+        return
+    print("ID  Nombre                  Precio   Cantidad")
+    for id_, nombre, precio, cantidad in filas:
+        print(f"{id_:<4}{nombre:<22}{precio:>8.2f}{cantidad:>10}")
+
+
+def actualizar_producto(conexion):
+    id_ = int(input("ID del producto: "))
+    print("1. Cambiar precio")
+    print("2. Cambiar cantidad")
+    opcion = input("Opcion: ")
+    if opcion == "1":
+        valor = float(input("Nuevo precio: "))
+        campo = "precio"
+    elif opcion == "2":
+        valor = int(input("Nueva cantidad: "))
+        campo = "cantidad"
+    else:
+        print("Opcion no valida.")
+        return
+    if valor < 0:
+        print("El valor no puede ser negativo.")
+        return
+    if campo == "precio":
+        cursor = conexion.execute("UPDATE productos SET precio = ? WHERE id = ?", (valor, id_))
+    else:
+        cursor = conexion.execute("UPDATE productos SET cantidad = ? WHERE id = ?", (valor, id_))
+    conexion.commit()
+    if cursor.rowcount == 0:
+        print("No existe ese producto.")
+    else:
+        print("Producto actualizado.")
+
+
+def eliminar_producto(conexion):
+    id_ = int(input("ID del producto a eliminar: "))
+    try:
+        cursor = conexion.execute("DELETE FROM productos WHERE id = ?", (id_,))
+        conexion.commit()
+        if cursor.rowcount == 0:
+            print("No existe ese producto.")
+        else:
+            print("Producto eliminado.")
+    except sqlite3.IntegrityError:
+        conexion.rollback()
+        print("No se puede eliminar: el producto tiene ventas registradas.")
+
+
+def registrar_venta(conexion, simular_error=False):
+    id_ = int(input("ID del producto: "))
+    cantidad = int(input("Cantidad a vender: "))
+    if cantidad <= 0:
+        print("La cantidad debe ser mayor que cero.")
+        return
+
+    producto = conexion.execute(
+        "SELECT nombre, precio, cantidad FROM productos WHERE id = ?", (id_,)
+    ).fetchone()
+    if producto is None:
+        print("El producto no existe.")
+        return
+    nombre, precio, stock = producto
+    if stock < cantidad:
+        print(f"No hay suficientes unidades de {nombre}. Disponibles: {stock}")
+        return
+
+    try:
+        conexion.execute(
+            "INSERT INTO ventas (producto_id, cantidad, total) VALUES (?, ?, ?)",
+            (id_, cantidad, precio * cantidad),
+        )
+        if simular_error:
+            raise Exception("error simulado despues de registrar la venta")
+        conexion.execute(
+            "UPDATE productos SET cantidad = cantidad - ? WHERE id = ?",
+            (cantidad, id_),
+        )
+        conexion.commit()
+        print("Venta registrada y inventario actualizado.")
+    except Exception as error:
+        conexion.rollback()
+        print(f"Ocurrio un error: {error}")
+        print("Se hizo rollback. La venta fue cancelada y los datos siguen igual.")
+
+
+def historial_ventas(conexion):
+    filas = conexion.execute("""
+        SELECT ventas.id, productos.nombre, ventas.cantidad, ventas.total, ventas.fecha
+        FROM ventas
+        JOIN productos ON productos.id = ventas.producto_id
+        ORDER BY ventas.id
+    """).fetchall()
+    if not filas:
+        print("Todavia no hay ventas.")
+        return
+    print("ID  Producto                Cantidad   Total      Fecha")
+    for id_, nombre, cantidad, total, fecha in filas:
+        print(f"{id_:<4}{nombre:<22}{cantidad:>8}{total:>10.2f}   {fecha}")
+
+
+def menu():
+    print()
+    print("===== TIENDA DE COMPONENTES =====")
+    print("1. Registrar producto")
+    print("2. Consultar productos")
+    print("3. Actualizar producto")
+    print("4. Eliminar producto")
+    print("5. Registrar venta")
+    print("6. Historial de ventas")
+    print("7. Probar venta con error (rollback)")
+    print("0. Salir")
+
+
+def main():
+    conexion = conectar()
+    crear_tablas(conexion)
+    while True:
+        menu()
+        opcion = input("Elige una opcion: ")
+        try:
+            if opcion == "1":
+                registrar_producto(conexion)
+            elif opcion == "2":
+                consultar_productos(conexion)
+            elif opcion == "3":
+                actualizar_producto(conexion)
+            elif opcion == "4":
+                eliminar_producto(conexion)
+            elif opcion == "5":
+                registrar_venta(conexion)
+            elif opcion == "6":
+                historial_ventas(conexion)
+            elif opcion == "7":
+                registrar_venta(conexion, simular_error=True)
+            elif opcion == "0":
+                print("Hasta luego.")
+                break
+            else:
+                print("Opcion no valida.")
+        except ValueError:
+            print("Debes escribir un numero valido.")
+    conexion.close()
+
+
+if __name__ == "__main__":
+    main()
